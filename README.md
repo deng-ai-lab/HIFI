@@ -27,7 +27,5 @@ The code is licensed for non-commercial academic research purpose only.
    * The code will train the surrogate neurons for different neurons, and visualize the testing results.
 #  HIFI on general AI datasets
    * This part is provided in the `CIFAR10_Recognition/` document.
-   * The demo is applied for CIFAR10 dataset on different network architectures. Here, we provide two sample network architectures in the `arch.yaml`.
-   * Run `main.py` to directly train HIFI with default parameter settings. 
-   * Run `test.py` to test accuracy of the trained HIFI model. Pre-trained models for two sample network architectures can be downloaded in `https://www.dropbox.com/scl/fo/r0h1588ctns4iop0jalpq/h?dl=0&rlkey=s4eztpin5pf2chnrdpqesv6qh`.
+   * Run run.sh to directly train HlFl with default parameter settings.
    * Our model is scalable for different network architectures and general for different datasets. The network architecture and the datasets can be replaced as you need.
