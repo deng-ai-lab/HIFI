@@ -279,7 +279,7 @@ def main():
             batch_loss = 0
             optimizer.zero_grad()
             for t in range(t_step):
-                input_frame = frame
+                input_frame = frame.cuda()
                 if args.amp:
                     with amp.autocast():
                         if t == 0:
@@ -382,7 +382,7 @@ def main():
                 total_loss = 0
 
                 for t in range(t_step):
-                    input_frame = frame
+                    input_frame = frame.cuda()
                     if t == 0:
                         out_fr = net(input_frame)
                         total_fr = out_fr.clone().detach()

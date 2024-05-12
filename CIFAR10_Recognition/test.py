@@ -4,7 +4,7 @@ import torchvision.datasets as datasets
 from spikingjelly.clock_driven import functional
 from spikingjelly.clock_driven import surrogate as surrogate_sj
 from modules import neuron, surrogate
-from models import spiking_resnet, spiking_vgg_bn
+from models import spiking_resnet
 from utils import Bar, AverageMeter, accuracy
 import argparse
 import collections
@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description='SNN testing')
     parser.add_argument('-T', default=6, type=int, help='Simulation time-steps')
     parser.add_argument('-tau', default=1.1, type=float, help='Membrane time constant')
+    parser.add_argument('-vth', default=1.1, type=float, help='Membrane potential threshold')
     parser.add_argument('-data_dir', default='./data', type=str, help='Directory to store data')
     parser.add_argument('-dataset', default='cifar10', type=str, help='Should be either cifa10 or cifar100')
     parser.add_argument('-ckpt', default=None, type=str, help='Path to the checkpoint')
@@ -70,7 +71,7 @@ def main():
     neuron_model = neuron.HIFINeuron
 
     if args.dataset.startswith('cifar'):
-        net = spiking_resnet.__dict__[args.model](neuron=neuron_model, num_classes=num_class, tau=args.tau, surrogate_function=surrogate_function, c_in=c_in, fc_hw=1)
+        net = spiking_resnet.__dict__[args.model](neuron=neuron_model, num_classes=num_class, tau=args.tau, v_threshold=args.vth,surrogate_function=surrogate_function, c_in=c_in, fc_hw=1)
         print('using Resnet model')
     else:
         raise NotImplementedError
@@ -128,7 +129,7 @@ def main():
             t_step = args.T
 
             for t in range(t_step):
-                input_frame = frame
+                input_frame = frame.cuda()
 
                 out_fr, spike_fr = net.test(input_frame)
 
