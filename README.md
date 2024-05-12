@@ -19,12 +19,6 @@ The code is licensed for non-commercial academic research purpose only.
 
  * Installation
    - install requirements by typing `pip install -r requirements.txt`.
-# Simulating the spiking dynamics of brain neurons
-   * This part is provided in the `biological_fidelity/` document.
-   * We provide the training and testing datasets of mouse brain neurons, i.e. the `.npy` files in the `data/` document.
-   * The calcium-evoked fluorescent video can be downloaded in `https://www.dropbox.com/s/jhk8hr7wb40mb7m/20210818_66_iron.avi?dl=0`
-   * The demo for neurons can be run by **Jupyter Notebook**, i.e. `biological_fidelity_demo.ipynb`.
-   * The code will train the surrogate neurons for different neurons, and visualize the testing results.
 #  HIFI on general AI datasets
    * This part is provided in the `CIFAR10_Recognition/` document.
    * Run run.sh to directly train HlFl with default parameter settings.
