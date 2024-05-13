@@ -16,7 +16,6 @@ The code is licensed for non-commercial academic research purpose only.
    - spikingjelly==0.0.0.0.14
    - torch==2.2.1+cu118
    - torchvision==0.17.1+cu118
- d
  * Installation
    - install requirements by typing `pip install -r requirements.txt`.
 #  HIFI on general AI datasets
