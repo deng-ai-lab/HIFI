@@ -15,6 +15,7 @@ from spikingjelly.clock_driven import surrogate as surrogate_sj
 from modules import surrogate as surrogate_self
 from utils import Bar, Logger, AverageMeter, accuracy
 from utils.augmentation import RandomMixup, RandomCutmix, ClassificationPresetTrain, InterpolationMode
+from utils.regularization import Reg
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from torch.utils.data.dataloader import default_collate
@@ -35,6 +36,7 @@ def main():
     parser.add_argument('-vth', default=1.1, type=float, help='a hyperparameter for the LIF model')
     parser.add_argument('-b', default=128, type=int, help='batch size')
     parser.add_argument('-epochs', default=300, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('-interval', default=20, type=int, help='number of interval epochs to run the inner loop')
     parser.add_argument('-j', default=4, type=int, metavar='N', help='number of data loading workers (default: 4)')
     parser.add_argument('-data_dir', type=str, default='./data', help='directory of the used dataset')
     parser.add_argument('-dataset', default='cifar10', type=str, help='should be either cifar10 or cifar100')
@@ -50,7 +52,7 @@ def main():
     parser.add_argument('-step_size', default=100, type=float, help='step_size for StepLR')
     parser.add_argument('-gamma', default=0.1, type=float, help='gamma for StepLR')
     parser.add_argument('-T_max', default=300, type=int, help='T_max for CosineAnnealingLR')
-    parser.add_argument('-model', type=str, default='spiking_vgg11_bn', help='use which SNN model')
+    parser.add_argument('-model', type=str, default='spiking_resnet18', help='use which SNN model')
     parser.add_argument('-drop_rate', type=float, default=0.0, help='dropout rate')
     parser.add_argument('-weight_decay', type=float, default=0)
     parser.add_argument('-loss_lambda', type=float, default=0.05, help='the scaling factor for the MSE term in the loss')
@@ -105,6 +107,12 @@ def main():
         train_set = dataloader(root=args.data_dir, train=True, transform=transform_train,download=True)
         test_set = dataloader(root=args.data_dir, train=False, transform=transform_test, download=True)
 
+        # split validation set from training set
+        all_data_num = len(train_set)
+        valid_data_num = int(all_data_num * 0.05)
+        train_data_num = all_data_num - valid_data_num
+        train_set, valid_set = torch.utils.data.random_split(train_set, [train_data_num, valid_data_num])
+
         train_data_loader = DataLoader(
             dataset=train_set,
             batch_size=args.b,
@@ -118,6 +126,14 @@ def main():
             dataset=test_set,
             batch_size=args.b,
             shuffle=False,
+            drop_last=False,
+            num_workers=args.j,
+            pin_memory=True
+        )
+        valid_data_loader = DataLoader(
+            dataset=valid_set,
+            batch_size=args.b,
+            shuffle=True,
             drop_last=False,
             num_workers=args.j,
             pin_memory=True
@@ -143,6 +159,7 @@ def main():
     if args.dataset.startswith('cifar'):
         net = spiking_resnet.__dict__[args.model](neuron=neuron_model, num_classes=num_classes, neuron_dropout=args.drop_rate,
                                                   tau=args.tau, v_threshold=args.vth, surrogate_function=surrogate_function, c_in=c_in, fc_hw=1)
+        reg = Reg(net)
         print('using Resnet model.')
 
     else:
@@ -181,6 +198,9 @@ def main():
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.T_max)
     else:
         raise NotImplementedError(args.lr_scheduler)
+    
+    inner_optimizer = torch.optim.SGD(inner_params, lr=args.lr * 0.01, momentum=args.momentum)
+    inner_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(inner_optimizer, T_max=(args.T_max)//(args.interval))
 
     scaler = None
     if args.amp:
@@ -199,7 +219,7 @@ def main():
         net.load_state_dict(checkpoint['net'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-        start_epoch = checkpoint['epoch'] + 1
+        start_epoch = checkpoint['epoch']
         max_test_acc = checkpoint['max_test_acc']
         print('start epoch:', start_epoch, ', max test acc:', max_test_acc)
 
@@ -251,7 +271,7 @@ def main():
     ##########################################################
     criterion_mse = nn.MSELoss()
 
-    for epoch in range(start_epoch, args.epochs):
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         ############### training ###############
         start_time = time.time()
         net.train()
@@ -263,13 +283,13 @@ def main():
         top5 = AverageMeter()
         end = time.time()
 
-        bar = Bar('Processing', max=len(train_data_loader))
 
+        ############### outer loop ##############
         train_loss = 0
-        train_acc = 0
         train_samples = 0
         batch_idx = 0
 
+        bar = Bar('OuterLoop', max=len(train_data_loader))
         for frame, label in train_data_loader:
             batch_idx += 1
             t_step = args.T
@@ -357,6 +377,98 @@ def main():
         writer.add_scalar('train_loss', train_loss, epoch)
 
         lr_scheduler.step()
+
+
+        ############### inner loop ##############
+        if epoch % args.interval == 0:
+            batch_idx = 0
+            bar = Bar('InnerLoop', max=len(valid_data_loader))
+            for frame, label in valid_data_loader:
+                batch_idx += 1
+                t_step = args.T
+
+                label = label.cuda()
+
+                batch_loss = 0
+                optimizer.zero_grad()
+                for t in range(t_step):
+                    input_frame = frame.cuda()
+                    if args.amp:
+                        with amp.autocast():
+                            if t == 0:
+                                out_fr = net(input_frame)
+                                total_fr = out_fr.clone().detach()
+                            else:
+                                out_fr = net(input_frame)
+                                total_fr += out_fr.clone().detach()
+                            # Calculate the loss
+                            if args.loss_lambda > 0.0:  # the loss is a cross entropy term plus a mse term
+                                if args.mse_n_reg:  # the mse term is not treated as a regularizer
+                                    label_one_hot = F.one_hot(label, num_classes).float()
+                                else:
+                                    label_one_hot = torch.zeros_like(out_fr).fill_(args.loss_means).to(out_fr.device)
+                                mse_loss = criterion_mse(out_fr, label_one_hot)
+                                # get current learning rate
+                                current_lr = optimizer.param_groups[0]['lr']
+                                loss = ((1 - args.loss_lambda) * F.cross_entropy(out_fr, label, label_smoothing=current_lr) + args.loss_lambda * mse_loss) / t_step
+                            else:  # the loss is just a cross entropy term
+                                loss = F.cross_entropy(out_fr, label) / t_step
+
+                            loss += reg() * 1e-2
+
+                        scaler.scale(loss).backward()
+
+                    else:
+                        if t == 0:
+                            out_fr = net(input_frame)
+                            total_fr = out_fr.clone().detach()
+                        else:
+                            out_fr = net(input_frame)
+                            total_fr += out_fr.clone().detach()
+                        if args.loss_lambda > 0.0:
+                            label_one_hot = torch.zeros_like(out_fr).fill_(args.loss_means).to(out_fr.device)
+                            if args.mse_n_reg:
+                                label_one_hot = F.one_hot(label, num_classes).float()
+                            mse_loss = criterion_mse(out_fr, label_one_hot)
+                            loss = ((1 - args.loss_lambda) * F.cross_entropy(out_fr, label) + args.loss_lambda * mse_loss) / t_step
+                        else:
+                            loss = F.cross_entropy(out_fr, label) / t_step
+
+                        loss += reg() * 1e-2
+                        loss.backward()
+
+                    batch_loss += loss.item()
+
+                if args.amp:
+                    scaler.step(inner_optimizer)
+                    scaler.update()
+                else:
+                    inner_optimizer.step()
+
+                losses.update(batch_loss, input_frame.size(0))
+
+                train_samples += label.numel()
+
+                functional.reset_net(net)
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                # plot progress
+                bar.suffix  = '({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f}'.format(
+                            batch=batch_idx,
+                            size=len(valid_data_loader),
+                            data=data_time.avg,
+                            bt=batch_time.avg,
+                            total=bar.elapsed_td,
+                            eta=bar.eta_td,
+                            loss=losses.avg,
+                            )
+                bar.next()
+            bar.finish()
+
+            inner_lr_scheduler.step()
 
 
         ############### testing ###############
@@ -458,7 +570,7 @@ def main():
 
         total_time = time.time() - start_time
         
-        result_str = f'epoch={epoch}, train_loss={train_loss}, train_acc={train_acc}, test_loss={test_loss}, test_acc={test_acc}, max_test_acc={max_test_acc}, total_time={total_time}, escape_time={(datetime.datetime.now()+datetime.timedelta(seconds=total_time * (args.epochs - epoch))).strftime("%Y-%m-%d %H:%M:%S")}'
+        result_str = f'epoch={epoch}, train_loss={train_loss}, test_loss={test_loss}, test_acc={test_acc}, max_test_acc={max_test_acc}, total_time={total_time}, escape_time={(datetime.datetime.now()+datetime.timedelta(seconds=total_time * (args.epochs - epoch))).strftime("%Y-%m-%d %H:%M:%S")}'
 
         print(result_str)
 

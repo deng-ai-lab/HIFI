@@ -28,8 +28,8 @@ class PreActBlock(nn.Module):
         else:
             self.shortcut = nn.Sequential()
 
-        self.relu1 = neuron(**kwargs)
-        self.relu2 = neuron(**kwargs)
+        self.relu1 = neuron(dim=in_channels, **kwargs)
+        self.relu2 = neuron(dim=out_channels, **kwargs)
 
     def forward(self, x):
         x = self.relu1(self.bn1(x))
@@ -109,7 +109,7 @@ class PreActResNet(nn.Module):
         self.pool = nn.AvgPool2d(4)
         self.flat = nn.Flatten()
         self.drop = layer.Dropout(dropout)
-        self.relu1 = neuron(**kwargs)
+        self.relu1 = neuron(dim=512 * block.expansion, **kwargs)
 
         self.linear = nn.Linear(512 * block.expansion, num_classes)
 
